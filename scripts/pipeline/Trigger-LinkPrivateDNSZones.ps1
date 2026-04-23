@@ -54,15 +54,15 @@ if ($enableDebug) {
 }
 
 Write-Host "${functionName} started at $($startTime.ToString('u'))"
-Write-Debug "${functionName}:PrivateDnsZoneName=$PrivateDnsZoneName"
-Write-Debug "${functionName}:ResourceGroupName=$ResourceGroupName"
-Write-Debug "${functionName}:SubscriptionName=$SubscriptionName"
-Write-Debug "${functionName}:TenantId=$TenantId"
-Write-Debug "${functionName}:WorkingDirectory=$WorkingDirectory"
+Write-Host "${functionName}:PrivateDnsZoneName=$PrivateDnsZoneName"
+Write-Host "${functionName}:ResourceGroupName=$ResourceGroupName"
+Write-Host "${functionName}:SubscriptionName=$SubscriptionName"
+Write-Host "${functionName}:TenantId=$TenantId"
+Write-Host "${functionName}:WorkingDirectory=$WorkingDirectory"
 
 try {
     [System.IO.DirectoryInfo]$moduleDir = Join-Path -Path $WorkingDirectory -ChildPath "scripts/modules/ado"
-    Write-Debug "${functionName}:moduleDir.FullName=$($moduleDir.FullName)"
+    Write-Host "${functionName}:moduleDir.FullName=$($moduleDir.FullName)"
     Import-Module $moduleDir.FullName -Force
 
     [object]$runPipelineRequestBodyWithDefaultConfig = '{
@@ -94,7 +94,7 @@ finally {
 
     Write-Host "${functionName} finished at $($endTime.ToString('u')) (duration $($duration -f 'g')) with exit code $exitCode"
     if ($setHostExitCode) {
-        Write-Debug "${functionName}:Setting host exit code"
+        Write-Host "${functionName}:Setting host exit code"
         $host.SetShouldExit($exitCode)
     }
     exit $exitCode

@@ -433,92 +433,272 @@ Function Test-ServiceEndpoint() {
 
 <#
 .SYNOPSIS
-Trigger a new Build.
+Trigger a new build and wait for completion; on failure, surface child run logs and artifacts.
 
 .DESCRIPTION
-This function will trigger a new build and wait till it's completed.
+Queues via Build REST API, polls until completed, then on failure fetches timeline issues, log tails, and uploads a zip of all logs.
 
 .PARAMETER organisationUri
-Mandatory. Azure devops project Orgnization Uri
+Mandatory. Azure DevOps organization collection URI.
 
 .PARAMETER projectName
-Mandatory. Azure devops project name
+Mandatory. Azure DevOps project name.
 
 .PARAMETER buildDefinitionId
-Mandatory. Build Definition Id
+Mandatory. Build definition id.
 
 .PARAMETER requestBody
-Mandatory. Request Body
+Mandatory. JSON body containing templateParameters (and optional wrapper); templateParameters are passed to the queue request.
 
 .EXAMPLE
-.\New-BuildRun -organisationUri <organisationUri> -projectName <projectName> -buildDefinitionId <buildDefinitionId> -requestBody <requestBody>
-#> 
+New-BuildRun -organisationUri $uri -projectName 'CCoE-Infrastructure' -buildDefinitionId 4634 -requestBody $requestBodyJson
+#>
 Function New-BuildRun() {
     [CmdletBinding()]
     Param(
-        [Parameter(Mandatory)]
-        [string]$organisationUri,
-        [Parameter(Mandatory)]
-        [string]$projectName,
-        [Parameter(Mandatory)]
-        [int]$buildDefinitionId,
-        [Parameter(Mandatory)]
-        [string]$requestBody
+        [Parameter(Mandatory)][string]$organisationUri,
+        [Parameter(Mandatory)][string]$projectName,
+        [Parameter(Mandatory)][int]$buildDefinitionId,
+        [Parameter(Mandatory)][string]$requestBody
     )
 
     begin {
         [string]$functionName = $MyInvocation.MyCommand
-        Write-Host "${functionName} started at $($startTime.ToString('u'))"
-        Write-Debug "${functionName}:organisationUri=$organisationUri"
-        Write-Debug "${functionName}:projectName=$projectName"
-        Write-Debug "${functionName}:buildDefinitionId=$buildDefinitionId"
-        Write-Debug "${functionName}:requestBody=$requestBody"
+        Write-Host "${functionName} started at $([datetime]::UtcNow.ToString('u'))"
+        Write-Host "${functionName}:organisationUri=$organisationUri"
+        Write-Host "${functionName}:projectName=$projectName"
+        Write-Host "${functionName}:buildDefinitionId=$buildDefinitionId"
+        Write-Host "${functionName}:requestBody=$requestBody"
     }
 
     process {
-        [Object]$headers = Get-DefaultHeadersWithAccessToken
-        $uriPostRunPipeline = "$($organisationUri)$($projectName)/_apis/pipelines/$($buildDefinitionId)/runs?api-version=7.0"
-        Write-Host "uriPostRunPipeline: $uriPostRunPipeline"
+        # ---- Config ----
+        $PollSeconds = 10
+        $TimeoutSecs = 1800
+        $TailLines   = 80
+        $MaxLogs     = 12
 
-        [Object]$pipelineRun = Invoke-RestMethod -Uri $uriPostRunPipeline -Method Post -Headers $headers -Body $requestBody
-        
-        Write-Debug $pipelineRun
-        Write-Debug "Pipeline runId $($pipelineRun.id) triggered sucessfully. Current state: $($pipelineRun.state)"
+        # ---- URLs / headers ----
+        $OrgBase = $organisationUri.TrimEnd('/') + '/'
+        $ProjEnc = [System.Uri]::EscapeDataString($projectName)
+        $apiVerBuild = "7.1-preview.7"
+        $headers = Get-DefaultHeadersWithAccessToken
 
-        $piplineRunResult = [string]::Empty
-        $totalSleepinSec = 0
-        $pipelineStateCheckMaxWaitTimeOutInSec = 600
+        # ---- Queue child build ----
+        $queueUri  = "$OrgBase$ProjEnc/_apis/build/builds?api-version=$apiVerBuild"
+        $queueBody = @{
+            definition         = @{ id = $buildDefinitionId }
+            templateParameters = (ConvertFrom-Json -InputObject $requestBody).templateParameters
+        } | ConvertTo-Json -Depth 10
+
+        $queued = Invoke-RestMethod -Method Post -Uri $queueUri -Headers $headers -Body $queueBody -ContentType "application/json" -ErrorAction Stop
+
+        if (-not $queued.id) {
+            Write-Warning "Queue response didn't include an 'id'. Full response follows:"
+            $queued | ConvertTo-Json -Depth 10
+            throw "Failed to queue child build (no id returned)."
+        }
+
+        $buildId = $queued.id
+        $webUrl  = $queued._links.web.href
+        if (-not $webUrl) { $webUrl = "$OrgBase$ProjEnc/_build/results?buildId=${buildId}" }
+
+        Write-Host "Queued child buildId: $buildId"
+        Write-Host "Child run URL: $webUrl"
+
+        # ---- Poll until completed or timeout ----
+        $elapsed = 0
+        $status  = $queued.status
+        $result  = $queued.result
+
         do {
-            Start-Sleep -Seconds 60
-            $gerPipelineRunStateUri = "$($organisationUri)$($projectName)/_apis/pipelines/$($buildDefinitionId)/runs/$($pipelineRun.id)?api-version=7.0"
-            $pipelinerundetails = Invoke-RestMethod -Uri $gerPipelineRunStateUri -Method Get -Headers $headers
-            $currentState = $pipelinerundetails.state
-            Write-Host "Current state of pipeline runId $($pipelineRun.id): $($currentState)"
-            Write-Host "Running state check..."
-            if ($currentState -ne "inProgress") {
-                $piplineRunResult = $pipelinerundetails.result
-                Write-Host "Current state: $($currentState)"
-                break
-            }
-        } until ($currentState -ne "inProgress" -or $totalSleepinSec -ge $pipelineStateCheckMaxWaitTimeOutInSec)
+            Start-Sleep -Seconds $PollSeconds
+            $elapsed += $PollSeconds
 
-        #report pipeline status
-        if ($piplineRunResult -eq "succeeded") {
-            $successmsg = "$($pipelinerundetails.pipeline.name) pipeline with runId $($pipelinerundetails.id) has completed successfully."
-            Write-Host "$($successmsg)"
-        }
-        else {
-            if ($totalSleepinSec -ge $pipelineStateCheckMaxWaitTimeOutInSec) {
-                $errorMsg += "Excecution of pipeline has stopped due to max timeout of $($pipelineStateCheckMaxWaitTimeOutInSec) sec."
+            $statusUrl = "$OrgBase$ProjEnc/_apis/build/builds/${buildId}?api-version=$apiVerBuild"
+            Write-Verbose "Status Url: $statusUrl"
+            $build  = Invoke-RestMethod -Method Get -Uri $statusUrl -Headers $headers -ErrorAction Stop
+            $status = $build.status
+            $result = $build.result
+
+            Write-Host "Child status: $status, result: $result"
+
+            if ($elapsed -ge $TimeoutSecs) {
+                Write-Host "##vso[task.logissue type=error]Child build exceeded timeout ($TimeoutSecs s)."
+                throw "Child build $buildId timed out after $TimeoutSecs seconds."
             }
-            else {
-                $errormsg = "$($pipelinerundetails.pipeline.name) pipeline with runId $($pipelinerundetails.id) has failed."
-            }
-            Write-Host "##vso[task.logissue type=error]$($errormsg)"
-            exit 1
+        } while ($status -ne "completed")
+
+        # ---- Success path ----
+        if ($result -eq "succeeded") {
+            Write-Host "$($build.definition.name) build $buildId completed successfully."
+            Write-Host "Child run: $webUrl"
+            return
         }
+
+        # ---- Failure path: timeline + targeted log tails + zip all logs ----
+        Write-Host "Child build FAILED. Collecting summary information..."
+
+        # Fetch timeline and logs index using the URLs Azure DevOps returned
+        $timeline = $null; $logsIdx = $null
+        try {
+            $timelineUrl = "$($build._links.timeline.href)"
+            Write-Verbose "timelineUrl: $timelineUrl"
+            $timeline = Invoke-RestMethod -Method Get -Uri $timelineUrl -Headers $headers -ErrorAction Stop
+        } catch { Write-Verbose "Timeline unavailable: $($_.Exception.Message)" }
+
+        try {
+            $logsIndexUrl = "$($build.logs.url)".TrimEnd('/')
+            Write-Verbose "logsIndexUrl: $logsIndexUrl"
+            $logsIdx = Invoke-RestMethod -Method Get -Uri $logsIndexUrl -Headers $headers -ErrorAction Stop
+        } catch { Write-Verbose "Logs index unavailable: $($_.Exception.Message)" }
+
+        # Quick human summary from timeline issues
+        if ($timeline -and $timeline.records) {
+            $issues = @()
+            foreach ($rec in $timeline.records) {
+                if ($rec.issues) {
+                    foreach ($i in $rec.issues) {
+                        $issues += "[{0}] {1}: {2}" -f $rec.name, $i.type, ($i.message -replace "`r|`n",' ')
+                    }
+                }
+            }
+            if ($issues.Count -gt 0) {
+                Write-Host "Timeline issues:"
+                $issues | ForEach-Object { Write-Host $_ }
+            }
+        }
+
+        # Helper: tail a specific log id (derive URL on the fly; prefer index entry if found)
+        function local:Show-LogTail {
+            param([Parameter(Mandatory)][int]$LogId,
+                  [Parameter(Mandatory)][string]$Title)
+
+            $entry = $null
+            if ($logsIdx -and $logsIdx.value) {
+                $entry = $logsIdx.value | Where-Object { [string]$_.id -eq [string]$LogId } | Select-Object -First 1
+            }
+            $logTextUrl = if ($entry -and $entry.url) { $entry.url } else { "$logsIndexUrl/$LogId" }
+
+            try {
+                Write-Verbose "Fetching log $LogId from $logTextUrl"
+                $logText = Invoke-RestMethod -Method Get -Uri $logTextUrl -Headers $headers -ErrorAction Stop
+                $tail    = ($logText -split "`n") | Select-Object -Last $TailLines
+                Write-Host "`n----- Log ${LogId}: $Title (last $TailLines lines) -----"
+                $tail | ForEach-Object { Write-Host $_ }
+                Write-Host "----- End log $LogId -----"
+                return $true
+            } catch {
+                Write-Verbose "Failed to fetch log ${LogId}: $($_.Exception.Message)"
+                return $false
+            }
+        }
+
+        # Pick target timeline records (failed/canceled/partial or with issues) + their children
+        $targetRecords = @()
+        if ($timeline -and $timeline.records) {
+            Write-Verbose "Found $($timeline.records.Count) timeline records."
+            $targetRecords = $timeline.records | Where-Object {
+                $_.result -in @("failed","canceled","partiallySucceeded") -or $_.issues
+            }
+
+            if ($targetRecords.Count -gt 0) {
+                $targetIds = $targetRecords.id
+                $children  = $timeline.records | Where-Object { $_.parentId -and ($targetIds -contains $_.parentId) }
+                $targetRecords += $children
+            }
+
+            $targetRecords = $targetRecords |
+                Sort-Object @{Expression={ $_.order }}, @{Expression={ $_.log.id }} |
+                Select-Object -Unique
+            Write-Verbose "Targeted records: $($targetRecords.Count)"
+        }
+
+        # Show tails for targeted logs first
+        $shown = 0
+        if ($targetRecords.Count -gt 0) {
+            foreach ($rec in $targetRecords) {
+                if ($shown -ge $MaxLogs) { break }
+                $logId = $rec.log.id
+                if ($null -ne $logId) {
+                    if (Show-LogTail -LogId $logId -Title $rec.name) { $shown++ }
+                }
+            }
+        }
+
+        # Fallback: latest logs if nothing shown
+        if ($shown -eq 0 -and $logsIdx -and $logsIdx.value) {
+            Write-Verbose "No targeted logs shown; falling back to latest logs."
+            $latest = $logsIdx.value | Sort-Object id -Descending | Select-Object -First ([Math]::Min($MaxLogs, $logsIdx.value.Count))
+            foreach ($l in $latest) {
+                if ($shown -ge $MaxLogs) { break }
+                if (Show-LogTail -LogId $l.id -Title "LogId $($l.id)") { $shown++ }
+            }
+        }
+
+        # ---- ZIP **all** logs and publish as artifact + job attachment ----
+        try {
+            # Map logId -> friendly name from timeline
+            $nameByLogId = @{}
+            if ($timeline -and $timeline.records) {
+                foreach ($rec in $timeline.records) {
+                    if ($rec.log -and $null -ne $rec.log.id -and $rec.name -and -not $nameByLogId.ContainsKey([string]$rec.log.id)) {
+                        $nameByLogId[[string]$rec.log.id] = $rec.name
+                    }
+                }
+            }
+
+            $workDir = if ($env:Agent_TempDirectory) { $env:Agent_TempDirectory } elseif ($env:TEMP) { $env:TEMP } else { $PWD }
+            $logsDir = Join-Path $workDir ("child-{0}-logs" -f $buildId)
+            if (Test-Path $logsDir) { Remove-Item -Recurse -Force $logsDir }
+            New-Item -ItemType Directory -Path $logsDir | Out-Null
+
+            function local:Sanitize-FileName([string]$name) {
+                if ([string]::IsNullOrWhiteSpace($name)) { return "" }
+                foreach ($c in [IO.Path]::GetInvalidFileNameChars()) {
+                    $name = $name.Replace([string]$c, '_')
+                }
+                return $name.Trim()
+            }
+
+            $downloaded = 0
+            if ($logsIdx -and $logsIdx.value) {
+                foreach ($l in ($logsIdx.value | Sort-Object id)) {
+                    $id  = $l.id
+                    $url = if ($l.url) { $l.url } elseif ($l._links.self.href) { $l._links.self.href } else { "$logsIndexUrl/$id" }
+                    $friendly = ""
+                    if ($nameByLogId.ContainsKey([string]$id)) { $friendly = " - " + (Sanitize-FileName $nameByLogId[[string]$id]) }
+                    $file = Join-Path $logsDir ("{0:D4}{1}.log" -f $id, $friendly)
+                    try {
+                        $text = Invoke-RestMethod -Method Get -Uri $url -Headers $headers -ErrorAction Stop
+                        [System.IO.File]::WriteAllText($file, [string]$text, [System.Text.Encoding]::UTF8)
+                        $downloaded++
+                    } catch { Write-Verbose "Failed to fetch log ${id}: $($_.Exception.Message)" }
+                }
+            }
+
+            $zipPath = Join-Path $workDir ("child-{0}-logs.zip" -f $buildId)
+            if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
+
+            if ((Get-ChildItem -Path $logsDir -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0) {
+                Compress-Archive -Path (Join-Path $logsDir '*') -DestinationPath $zipPath -Force
+                Write-Host "Created archive: $zipPath ($downloaded logs)"
+                $artifactName = "child-${buildId}-logs"
+                Write-Host "##vso[artifact.upload artifactname=$artifactName;]$zipPath"
+                Write-Host "##vso[task.uploadfile]$zipPath"
+            } else {
+                Write-Host "No logs were downloaded to zip."
+            }
+        } catch {
+            Write-Verbose "Zipping/publishing logs failed: $($_.Exception.Message)"
+        }
+
+        Write-Error "See child run for full details: $webUrl"
+        Write-Host "##vso[task.logissue type=error]$($build.definition.name) build $buildId failed (result=$result)."
+        throw "Child build failed (buildId=$buildId, result=$result)."
     }
+
     end {
-        Write-Debug "${functionName}:Exited"
+        Write-Verbose "${functionName}:Exited"
     }
 }
