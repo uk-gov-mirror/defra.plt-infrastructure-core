@@ -41,8 +41,10 @@ Set-StrictMode -Version 3.0
 [string]$functionName = $MyInvocation.MyCommand
 [datetime]$startTime = [datetime]::UtcNow
 
-[int]$exitCode = -1
-[bool]$setHostExitCode = (Test-Path -Path ENV:TF_BUILD) -and ($ENV:TF_BUILD -eq "true")
+[int]$exitCode = 0
+# TF_BUILD is often "True" on Azure Pipelines; string compare must be case-insensitive.
+[bool]$setHostExitCode = -not [string]::IsNullOrWhiteSpace($env:TF_BUILD) -and
+  [string]::Equals([string]$env:TF_BUILD, 'true', [System.StringComparison]::OrdinalIgnoreCase)
 [bool]$enableDebug = (Test-Path -Path ENV:SYSTEM_DEBUG) -and ($ENV:SYSTEM_DEBUG -eq "true")
 
 Set-Variable -Name ErrorActionPreference -Value Continue -scope global
@@ -80,13 +82,10 @@ try {
     [string]$requestBodyJson = $($runPipelineRequestBodyWithDefaultConfig | ConvertTo-Json)
 
     New-BuildRun -organisationUri $env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI -projectName "CCoE-Infrastructure" -buildDefinitionId 4634 -requestBody $requestBodyJson
-
-    $exitCode = 0
 }
 catch {
-    $exitCode = -2
-    Write-Error $_.Exception.ToString()
-    throw $_.Exception
+    $exitCode = 1
+    Write-Error $_.Exception.Message
 }
 finally {
     [DateTime]$endTime = [DateTime]::UtcNow

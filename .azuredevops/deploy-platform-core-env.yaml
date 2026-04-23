@@ -90,7 +90,7 @@ variables:
   # Optional JSON array for extra private DNS A records when DI is enabled. Default empty; instance core.yaml may override.
   - name: additionalDnsConfig
     value: ''
-  # Optional JSON array of zone names; each triggers scripts/pipeline/Trigger-LinkPrivateDNSZones.ps1 (same as ADP).
+  # Optional JSON array of { ResourceGroupName, PrivateDnsZoneName } (or legacy string zone names + regional DNS RG mapping). Default empty.
   - name: additionalDnsZonesToLink
     value: '[]'
   - template: /config/common.yaml@PltConfig

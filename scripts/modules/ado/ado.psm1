@@ -527,10 +527,12 @@ Function New-BuildRun() {
                 Write-Host "##vso[task.logissue type=error]Child build exceeded timeout ($TimeoutSecs s)."
                 throw "Child build $buildId timed out after $TimeoutSecs seconds."
             }
-        } while ($status -ne "completed")
+
+            $statusCompleted = [string]::Equals([string]$status, 'completed', [System.StringComparison]::OrdinalIgnoreCase)
+        } while (-not $statusCompleted)
 
         # ---- Success path ----
-        if ($result -eq "succeeded") {
+        if ([string]::Equals([string]$result, 'succeeded', [System.StringComparison]::OrdinalIgnoreCase)) {
             Write-Host "$($build.definition.name) build $buildId completed successfully."
             Write-Host "Child run: $webUrl"
             return
