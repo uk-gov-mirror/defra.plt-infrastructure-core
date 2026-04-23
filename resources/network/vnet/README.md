@@ -37,3 +37,4 @@ If a property is missing or an array is empty, that section is skipped.
 - `users`: array of UPN/email strings
 - `groups`: array of group display names
 - `serviceprincipals`: array of service principal display names
+
