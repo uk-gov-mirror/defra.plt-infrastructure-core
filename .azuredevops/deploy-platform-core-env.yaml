@@ -109,7 +109,7 @@ resources:
       name: DEFRA/plt-config
       endpoint: DEFRA
       type: github
-      ref: ml/container-apps
+      ref: refs/heads/main
 
 extends:
   template: /.azuredevops/common/common-infra-deploy.yaml
