@@ -2,7 +2,7 @@
 
 All notable changes to this repository should be documented in this file.
 
-## [1.1.0] - 2026-04-14
+## [1.1.0] - 2026-04-24
 
 ### Added
 
@@ -11,7 +11,7 @@ All notable changes to this repository should be documented in this file.
 
 ### Changed
 
-- **Triggered CCoE pipelines** (private DNS zone linking and VNet peering) now report success and failure more reliably in Azure Pipelines: build completion is detected in a way that tolerates different API casing, and the job exit code reflects a failed remote run when `TF_BUILD` is set (including when the agent reports `True` rather than `true`). When a triggered **external** pipeline run does **not** succeed, the framework now downloads that run’s logs, bundles them, and **publishes them to your job as a pipeline artifact** (so you can open the parent run in Azure DevOps and inspect the child logs without switching projects first).
+- **Triggered CCoE pipelines** (private DNS zone linking and VNet peering) now report success and failure more reliably in Azure Pipelines: build completion is detected in a way that tolerates different API casing, and the job exit code reflects a failed remote run when `TF_BUILD` is set (including when the agent reports `True` rather than `true`). When a triggered **external** pipeline run does **not** succeed, the framework now downloads that run’s logs, bundles them, and **publishes them to your job as a pipeline artifact**. This provides visibility of the run result without having access to remote pipeline (typically CCoE managed).
 
 ## [1.0.0] - 2026-03-25
 
