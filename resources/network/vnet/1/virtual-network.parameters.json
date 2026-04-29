@@ -71,7 +71,12 @@
           "serviceEndpoints": [],
           "privateEndpointNetworkPolicies": "Enabled",
           "privateLinkServiceNetworkPolicies": "Enabled",
-          "delegations": [],
+          "delegations": [
+            {
+              "name": "containerAppsDelegation",
+              "properties": { "serviceName": "Microsoft.App/environments" }
+            }
+          ],
           "nsgLayout": "#{{ subnet5NsgLayout }}",
           "routeTable": { "routeTableNumber": "#{{ subnet5RouteTable }}" }
         },

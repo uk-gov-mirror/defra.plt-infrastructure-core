@@ -90,6 +90,9 @@ variables:
   # Optional JSON array for extra private DNS A records when DI is enabled. Default empty; instance core.yaml may override.
   - name: additionalDnsConfig
     value: ''
+  # Optional JSON array of { ResourceGroupName, PrivateDnsZoneName } (or legacy string zone names + regional DNS RG mapping). Default empty.
+  - name: additionalDnsZonesToLink
+    value: '[]'
   - template: /config/common.yaml@PltConfig
   # Regional config: path uses compile-time parameters so template resolves; must match config (validated below)
   - template: /config/regional/${{ parameters.environmentName }}-${{ parameters.location }}.yaml@PltConfig
@@ -167,6 +170,19 @@ extends:
           dependsOnGroupedDeployments:
             - validate_and_setup
           deployments:
+              - name: link-additional-private-dns-zones
+                type: 'script'
+                scriptType: AzurePowerShell
+                serviceConnectionVariableName: 'ssvServiceConnection'
+                useSystemAccessTokeninScript: true
+                inlineScript: |
+                  & "$(Pipeline.Workspace)/s/self/scripts/pipeline/Link-AdditionalPrivateDnsZones.ps1" `
+                    -AdditionalDnsZonesToLink '$(additionalDnsZonesToLink)' `
+                    -Location "$(location)" `
+                    -RegionToDnsResourcegroupMappingTable '$(regionToDnsResourcegroupMappingTable)' `
+                    -SubscriptionName "$(subscriptionName)" `
+                    -TenantId "$(tenantId)" `
+                    -WorkingDirectory "$(Pipeline.Workspace)/s/self"
               - name: create-aad-groups
                 type: 'script'
                 scriptType: AzurePowerShell

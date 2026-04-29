@@ -8,39 +8,41 @@ This script triggers a pipeline in CCOE-Infrastructure ADO project to link the D
 .PARAMETER PrivateDnsZoneName
 Mandatory. Private DNS Zone Name.
 
+.PARAMETER ResourceGroupName
+Mandatory. Private DNS Zone Resource Group Name.
+
 .PARAMETER SubscriptionName
 Mandatory. Private DNS Zone Subscription Name.
 
 .PARAMETER TenantId
 Mandatory. Private DNS Zone Tenant Id.
 
-.PARAMETER PeerToSec
-Optional. Peer to sec vnet. Defaults to false
-
 .EXAMPLE
-.\Trigger-VNetPeering.ps1 -VirtualNetworkName <private Dns Zone Name> -SubscriptionName <dns zone subscription name> -TenantId <dns zone tenant id> -PeerToSec <Peer to sec vnet    >
-#>
+.\Trigger-LinkPrivateDNSZones.ps1 -privateDnsZoneName <private Dns Zone Name> -resourceGroupName <dns zone resource group> -subscriptionName <dns zone subscription name> -tenantId <dns zone tenant id>
+#> 
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] 
-    [string]$VirtualNetworkName,
+    [string]$PrivateDnsZoneName,
+    [Parameter(Mandatory)] 
+    [string]$ResourceGroupName,
     [Parameter(Mandatory)] 
     [string]$SubscriptionName,
     [Parameter(Mandatory)] 
     [string]$TenantId,
     [Parameter()]
-    [string]$WorkingDirectory = $PWD,
-    [Parameter()]
-    [bool]$PeerToSec = $false
+    [string]$WorkingDirectory = $PWD
 )
 
 Set-StrictMode -Version 3.0
+
 
 [string]$functionName = $MyInvocation.MyCommand
 [datetime]$startTime = [datetime]::UtcNow
 
 [int]$exitCode = 0
+# TF_BUILD is often "True" on Azure Pipelines; string compare must be case-insensitive.
 [bool]$setHostExitCode = -not [string]::IsNullOrWhiteSpace($env:TF_BUILD) -and
   [string]::Equals([string]$env:TF_BUILD, 'true', [System.StringComparison]::OrdinalIgnoreCase)
 [bool]$enableDebug = (Test-Path -Path ENV:SYSTEM_DEBUG) -and ($ENV:SYSTEM_DEBUG -eq "true")
@@ -54,26 +56,32 @@ if ($enableDebug) {
 }
 
 Write-Host "${functionName} started at $($startTime.ToString('u'))"
+Write-Host "${functionName}:PrivateDnsZoneName=$PrivateDnsZoneName"
+Write-Host "${functionName}:ResourceGroupName=$ResourceGroupName"
+Write-Host "${functionName}:SubscriptionName=$SubscriptionName"
+Write-Host "${functionName}:TenantId=$TenantId"
+Write-Host "${functionName}:WorkingDirectory=$WorkingDirectory"
 
 try {
     [System.IO.DirectoryInfo]$moduleDir = Join-Path -Path $WorkingDirectory -ChildPath "scripts/modules/ado"
+    Write-Host "${functionName}:moduleDir.FullName=$($moduleDir.FullName)"
     Import-Module $moduleDir.FullName -Force
 
     [object]$runPipelineRequestBodyWithDefaultConfig = '{
         "templateParameters": {
-            "VirtualNetworkName": "",
+            "PrivateDnsZoneName": "",
+            "ResourceGroup": "",
             "Subscription": "",
-            "Tenant": "",
-            "PeerToSec": ""
+            "Tenant": ""
         }
     }' | ConvertFrom-Json
-    $runPipelineRequestBodyWithDefaultConfig.templateParameters.VirtualNetworkName = $VirtualNetworkName
+    $runPipelineRequestBodyWithDefaultConfig.templateParameters.PrivateDnsZoneName = $PrivateDnsZoneName
+    $runPipelineRequestBodyWithDefaultConfig.templateParameters.ResourceGroup = $ResourceGroupName
     $runPipelineRequestBodyWithDefaultConfig.templateParameters.Subscription = $SubscriptionName
     $runPipelineRequestBodyWithDefaultConfig.templateParameters.Tenant = $TenantId
-    $runPipelineRequestBodyWithDefaultConfig.templateParameters.PeerToSec = $PeerToSec
     [string]$requestBodyJson = $($runPipelineRequestBodyWithDefaultConfig | ConvertTo-Json)
 
-    New-BuildRun -organisationUri $env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI -projectName "CCoE-Infrastructure" -buildDefinitionId 1851 -requestBody $requestBodyJson
+    New-BuildRun -organisationUri $env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI -projectName "CCoE-Infrastructure" -buildDefinitionId 4634 -requestBody $requestBodyJson
 }
 catch {
     $exitCode = 1
@@ -85,6 +93,7 @@ finally {
 
     Write-Host "${functionName} finished at $($endTime.ToString('u')) (duration $($duration -f 'g')) with exit code $exitCode"
     if ($setHostExitCode) {
+        Write-Host "${functionName}:Setting host exit code"
         $host.SetShouldExit($exitCode)
     }
     exit $exitCode
